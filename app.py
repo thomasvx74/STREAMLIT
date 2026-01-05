@@ -476,48 +476,120 @@ with tab2:
     else:
         st.warning("⚠️ Veuillez lancer la simulation dans le premier onglet pour afficher les données.")
 
-# --- ONGLET 3 : MÉTHODOLOGIE ---
+# --- ONGLET 3 : MÉTHODOLOGIE & EXPLICATIONS ---
+
+    # --- ONGLET 3 : DOCUMENTATION & MÉTHODOLOGIE ---
 with tab3:
-    st.markdown("""
-    ## 📘 Méthodologie Détaillée
+    st.markdown("# 📘 Architecture & Méthodologie")
     
-    Cette simulation repose sur une approche **Quasi-1D** couplée à des corrélations empiriques validées par l'industrie aérospatiale.
-
-    ### 1. Côté Gaz (Source Chaude) : Équation de Bartz
-    Le coefficient de transfert $h_g$ est estimé par :
-    
-    $$
-    h_g = \\frac{0.026}{D_t^{0.2}} \\left( \\frac{\\mu^{0.2} C_p}{Pr^{0.6}} \\right) \\left( \\frac{P_{cc}}{c^*} \\right)^{0.8} \\left( \\frac{A_t}{A} \\right)^{0.9} \\sigma
-    $$
-
-    ---
-
-    ### 2. Côté Liquide (Source Froide) : Canaux & Hélice
-    Le liquide de refroidissement (H2) circule dans des canaux usinés.
-    
-    **A. Convection (Dittus-Boelter)**
-    $$
-    Nu = 0.023 Re^{0.8} Pr^{0.4} \\quad \\Rightarrow \\quad h_c = \\frac{Nu \\cdot k_l}{D_h}
-    $$
-    
-    **B. Effet des Ailettes (Fin Efficiency)**
-    L'efficacité $\\eta_f$ des cloisons est calculée via une tangente hyperbolique :
-    $$
-    \\eta_f = \\frac{\\tanh(mH)}{mH}
-    $$
-
-    **C. Angle d'Hélice (Twist)** Lorsque l'angle $\\alpha > 0$ :
-    1.  **Augmentation de Surface :** La surface de contact par mètre axial augmente de $1/\\cos(\\alpha)$.
-    2.  **Allongement du Parcours :** Le fluide parcourt une distance plus longue ($dx_{eff} = dx / \\cos(\\alpha)$).
-
-    ---
-
-    ### 3. Bilan Thermique Global
-    Le flux thermique $q$ (W/m²) est conservé à travers les résistances en série :
-    
-    $$
-    q = \\frac{T_{aw} - T_{cool}}{R_{gaz} + R_{paroi} + R_{liq}}
-    $$
-
-    Où $R_{liq} = 1 / (h_{c,eff} \\times \\text{FacteurAngle})$.
+    st.info("""
+    **Résumé :** Ce simulateur est un code **Quasi-1D Stationnaire**. Il découpe la tuyère en fines tranches et calcule l'équilibre thermique sur chacune d'elles, en prenant en compte la variation de section.
     """)
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # 1. ARCHITECTURE LOGICIELLE
+    # -------------------------------------------------------------------------
+    st.header("1. Les Outils (Librairies)")
+    st.write("Le code s'appuie sur des standards de l'industrie pour garantir la précision :")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.success("**🧪 Cantera (Chimie)**")
+        st.caption("Calcul de Combustion")
+        st.write("Au lieu de fixer des constantes, Cantera calcule l'équilibre chimique réel H2/O2 à haute température. Il nous donne le **Gamma** ($\gamma$) et la **Température de flamme** exacts.")
+
+    with c2:
+        st.info("**❄️ CoolProp (Fluides)**")
+        st.caption("Propriétés H2 Liquide")
+        st.write("L'hydrogène change radicalement de comportement selon la pression. CoolProp fournit la densité, viscosité et conductivité locales précises à chaque millimètre.")
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------------------
+    # 2. ALGORITHME VISUEL
+    # -------------------------------------------------------------------------
+    st.header("2. L'Algorithme de Résolution")
+    st.write("Le calcul suit la logique physique du fluide de refroidissement : il remonte le courant.")
+
+    st.graphviz_chart('''
+    digraph {
+        rankdir=TB;
+        node [fontname="Arial", fontsize=11, style="filled,rounded", penwidth=0];
+        edge [color="#a0a0a0", penwidth=1.5];
+
+        // INITIALISATION
+        subgraph cluster_init {
+            label = ""; penwidth=0;
+            Start [label="🚀 DÉPART\nGéométrie & Paramètres", shape=parallelogram, fillcolor="#2196F3", fontcolor="white"];
+            Chem [label="🔥 COMBUSTION\n(Cantera)\nCalcul T_flamme, Gamma", shape=cylinder, fillcolor="#FFCCBC"];
+        }
+
+        // BOUCLE
+        subgraph cluster_loop {
+            label = " BOUCLE PRINCIPALE (On remonte de la Sortie vers l'Injecteur) ";
+            style=filled; bgcolor="#F5F5F5"; color="#dddddd";
+            fontcolor="#555555";
+            
+            node [shape=box];
+            
+            // Étape 1 : Gaz
+            Gas [label="1. AÉRODYNAMIQUE GAZ\nMach = f(Section)\nT_gaz, P_gaz", fillcolor="#FFAB91"];
+            
+            // Étape 2 : Liquide
+            Liq [label="2. ÉTAT LIQUIDE\n(CoolProp)\nDensité, Viscosité...", fillcolor="#81D4FA"];
+            
+            // Étape 3 : Échange
+            Exchange [label="3. ÉCHANGES THERMIQUES\nh_gaz (Bartz) ⚡ h_liq (Dittus)", fillcolor="#FFF59D"];
+            
+            // Étape 4 : Bilan
+            Bilan [label="4. BILAN DE FLUX\nq = Delta T / Résistances", shape=diamond, fillcolor="#A5D6A7"];
+            
+            // Étape 5 : Mise à jour
+            Update [label="5. MISE À JOUR\nT_liq += Énergie Gagnée\nP_liq += Frottements", fillcolor="#81D4FA"];
+        }
+
+        End [label="🏁 RÉSULTATS\nAffichage Graphiques", shape=parallelogram, fillcolor="#4CAF50", fontcolor="white"];
+
+        // FLUX
+        Start -> Chem -> Gas;
+        Gas -> Liq -> Exchange -> Bilan -> Update;
+        Update -> Gas [label=" Tranche suivante (i-1)", color="#1976D2", style=dashed];
+        Update -> End [label=" i=0 (Fini)"];
+    }
+    ''')
+
+    st.markdown("---") 
+
+    # -------------------------------------------------------------------------
+    # 3. PHYSIQUE SIMPLIFIÉE
+    # -------------------------------------------------------------------------
+    st.header("3. Fonctionnement Physique (Quasi-1D)")
+
+    st.markdown("""
+    **Pourquoi "Quasi-1D" ?**
+    Au lieu de simuler tout le volume en 3D (ce qui prendrait des heures), nous supposons que les propriétés (Pression, Température, Vitesse) sont uniformes sur une coupe transversale (une tranche).
+    """)
+    
+
+    col_phys1, col_phys2 = st.columns([1, 1.2])
+
+    with col_phys1:
+        st.subheader("⚡ Le Circuit Thermique")
+        st.write("Le flux de chaleur $q$ doit traverser 3 obstacles (résistances) :")
+        st.markdown("""
+        1.  **La couche limite Gaz** (Résistance convective)
+        2.  **La paroi en Cuivre** (Résistance conductive)
+        3.  **La couche limite Liquide** (Résistance convective)
+        """)
+        
+    with col_phys2:
+        st.subheader("🧮 L'Équation Bilan")
+        st.info("Le calcul repose sur cette unique formule d'équilibre :")
+        st.latex(r"""
+        q = \frac{T_{gaz} - T_{liquide}}{ \underbrace{\frac{1}{h_g}}_{\text{Gaz}} + \underbrace{\frac{e}{k}}_{\text{Paroi}} + \underbrace{\frac{1}{h_{liq} \cdot \Omega}}_{\text{Liquide}} }
+        """)
+        st.caption("Où $\Omega$ représente l'augmentation de surface due aux **ailettes** et à **l'angle** des canaux.")
+
+    st.markdown("---")
