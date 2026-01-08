@@ -206,7 +206,7 @@ def run_simulation_logic():
 # 4. INTERFACE UTILISATEUR & GRAPHIQUES
 # =============================================================================
 
-tab1, tab2, tab3 = st.tabs(["📊 Simulation & Résultats", "📋 Données Brutes", "🎓 Méthodologie"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 Simulation", "📊 Résultats", "📘 Méthodologie", "📥 Rapport Complet"])
 
 if 'sim_data' not in st.session_state:
     st.session_state['sim_data'] = None
@@ -652,3 +652,47 @@ with tab3:
     st.info("""
     **Efficacité des Ailettes ($\eta$) :** Les parois latérales des canaux ("ribs") aident à évacuer la chaleur. Le code calcule un rendement d'ailette pour ne pas surestimer le refroidissement, car le haut de l'ailette est plus chaud que la base.
     """)
+
+with tab4:
+    st.header("📄 Rapport Technique")
+    
+    # --- CONFIGURATION ---
+    nom_du_fichier = "Rapport_TT.pdf"  # <--- METS LE NOM EXACT DE TON FICHIER ICI
+    titre_bouton = "📥 Télécharger le Rapport (PDF)"
+    
+    import base64
+
+    # Fonction pour afficher le PDF dans l'app
+    def show_pdf(file_path):
+        with open(file_path, "rb") as f:
+            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
+    # --- LOGIQUE D'AFFICHAGE ---
+    try:
+        with open(nom_du_fichier, "rb") as f:
+            pdf_data = f.read()
+            
+        # Colonnes pour centrer le bouton ou mettre des infos à côté
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            st.info("Ce document détaille les équations, les hypothèses (Bartz, Wilke) et l'analyse des résultats.")
+            # Le Bouton de Téléchargement
+            st.download_button(
+                label=titre_bouton,
+                data=pdf_data,
+                file_name="Rapport_Tuyere_Rocket.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+            
+        with col2:
+            st.write("**Aperçu du document :**")
+            # Affichage de l'aperçu
+            show_pdf(nom_du_fichier)
+
+    except FileNotFoundError:
+        st.error(f"⚠️ Erreur : Le fichier '{nom_du_fichier}' est introuvable.")
+        st.warning("Assure-toi que le fichier PDF est bien dans le même dossier que le script Python.")
