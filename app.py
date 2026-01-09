@@ -7,11 +7,10 @@ from scipy.optimize import fsolve
 import cantera as ct
 from CoolProp.CoolProp import PropsSI
 import os
-import base64
 
-# ==============================================================================
-# CONFIGURATION GÉNÉRALE DE L'APPLICATION
-# ==============================================================================
+# =============================================================================
+# 1. CONFIGURATION GLOBALE ET UTILITAIRES D'AFFICHAGE
+# =============================================================================
 st.set_page_config(
     page_title="Simulateur Régénératif Avancé",
     layout="wide",
@@ -20,96 +19,91 @@ st.set_page_config(
 
 def make_patch_spines_invisible(ax):
     """
-    Utilitaire graphique pour Matplotlib.
-    Masque les bordures (spines) des axes secondaires pour les graphiques multi-échelles.
+    Masque les bordures (spines) des axes supplémentaires pour les graphiques 
+    à échelles multiples (twinx), améliorant ainsi la lisibilité.
     """
     ax.set_frame_on(True)
     ax.patch.set_visible(False)
     for sp in ax.spines.values():
         sp.set_visible(False)
 
-# ------------------------------------------------------------------------------
-# EN-TÊTE ET PRÉSENTATION
-# ------------------------------------------------------------------------------
+# En-tête de l'application
 st.title("🚀 Simulation Avancée : Tuyère & Refroidissement Régénératif")
 st.markdown("""
-Ce simulateur modélise les **échanges thermiques couplés** (Gaz de combustion - Paroi - Liquide de refroidissement) 
-dans une tuyère de moteur-fusée.
-
-Le modèle résout l'équilibre thermique en régime stationnaire en prenant en compte :
-* La chimie complexe des gaz (Cantera).
-* Les propriétés réelles du fluide cryogénique (CoolProp).
-* L'effet géométrique des canaux hélicoïdaux (augmentation de surface).
+Ce simulateur modélise les échanges thermiques couplés (Gaz-Paroi-Liquide) dans une tuyère de fusée.
+Il intègre l'effet des canaux hélicoïdaux (en spirale) pour augmenter l'efficacité du refroidissement.
 """)
 
-# ==============================================================================
-# 1. PARAMÉTRAGE (SIDEBAR)
-# ==============================================================================
+# =============================================================================
+# 2. INTERFACE UTILISATEUR : PARAMÈTRES D'ENTRÉE (SIDEBAR)
+# =============================================================================
 st.sidebar.header("1. Géométrie des Canaux")
-# Paramètres définissant la structure interne de l'échangeur de chaleur (la paroi)
+# Paramètres géométriques des canaux de refroidissement (cooling channels)
 N_channels = st.sidebar.number_input("Nombre de canaux", value=100, step=10)
 channel_width_mm = st.sidebar.number_input("Largeur canal (mm)", value=1.5, step=0.1)
 channel_height_mm = st.sidebar.number_input("Hauteur canal (mm)", value=4.0, step=0.1)
 wall_thickness_mm = st.sidebar.number_input("Épaisseur paroi (mm)", value=1.0, step=0.1)
 channel_angle = st.sidebar.slider("Angle d'hélice (°)", 0.0, 60.0, 0.0, step=5.0, 
-                                  help="0° = canaux droits. Un angle augmente le temps de séjour du fluide et la surface d'échange.")
+                                  help="0° = canaux droits. Un angle augmente la surface d'échange.")
 
-# Conversion immédiate en unités SI (Mètres) pour les calculs internes
+# Conversion des unités millimétriques en mètres (SI) pour les calculs physiques
 channel_width = channel_width_mm / 1000.0
 channel_height = channel_height_mm / 1000.0
 wall_thickness = wall_thickness_mm / 1000.0
 
 st.sidebar.header("2. Conditions Moteur")
-# Conditions aux limites thermodynamiques
+# Paramètres thermodynamiques de la chambre de combustion et du fluide
 P_cc_bar = st.sidebar.number_input("Pression Chambre (bar)", value=70.0, step=5.0)
-P_cc = P_cc_bar * 1e5
+P_cc = P_cc_bar * 1e5  # Conversion bar -> Pa
 mdot_coolant = st.sidebar.number_input("Débit liquide (kg/s)", value=2.2, step=0.1)
 T_coolant_in = st.sidebar.number_input("Temp. Entrée Liquide (K)", value=35.0, step=1.0)
 P_coolant_in_bar = st.sidebar.number_input("Pression Liquide (bar)", value=110.0, step=5.0)
-P_coolant_in = P_coolant_in_bar * 1e5
+P_coolant_in = P_coolant_in_bar * 1e5 # Conversion bar -> Pa
 
 st.sidebar.header("3. Matériau")
 k_material = st.sidebar.number_input("Conductivité (W/m.K)", value=390.0, 
-                                     help="Exemples : ~390 pour le Cuivre (très conducteur), ~20 pour l'Inconel (résistant mais isolant).")
+                                     help="390 pour le Cuivre (très conducteur), 20 pour l'Inconel (résistant mais isolant)")
 
-# ==============================================================================
-# 2. MOTEUR PHYSIQUE (FONCTIONS CŒUR)
-# ==============================================================================
+# =============================================================================
+# 3. MOTEUR PHYSIQUE : FONCTIONS DE CALCUL
+# =============================================================================
 
 @st.cache_data
 def generate_geometry():
     """
-    Génère ou charge le profil 2D de la tuyère (Rayon vs Position X).
+    Génère ou charge le profil géométrique de la tuyère (Rayon vs Position X).
+    Si le fichier 'profil_tuyere.csv' n'existe pas, un profil standard de Laval est créé.
     
     Returns:
-        tuple: (x_coords, r_coords) vecteurs numpy des positions et rayons.
+        tuple: Tableaux numpy des positions axiales (x) et des rayons (r).
     """
     csv_file = "profil_tuyere.csv"
     if os.path.exists(csv_file):
         df = pd.read_csv(csv_file)
         return df['x'].values, df['radius'].values
     else:
-        # Profil générique "Rao" simplifié si aucun fichier n'est présent
+        # Création d'un profil parabolique standard
         x = np.linspace(-0.05, 0.25, 300)
-        # Utilisation de np.where pour définir la forme convergente/divergente
+        # Formule conditionnelle : Convergent vs Divergent
         r = np.where(x < 0, 0.03 + x**2 * 8, 0.03 + 0.12 * np.sqrt(np.abs(x)))
         pd.DataFrame({'x': x, 'radius': r}).to_csv(csv_file, index=False)
         return x, r
 
 def get_mach(area_ratio, gamma, subsonic=True):
     """
-    Résout l'équation aire-Mach pour un écoulement isentropique compressible.
+    Résout la relation Aire-Mach pour un écoulement isentropique.
     
     Args:
-        area_ratio (float): Rapport A/A_col.
-        gamma (float): Coefficient de Laplace (Cp/Cv).
-        subsonic (bool): Si True, cherche la solution M < 1, sinon M > 1.
+        area_ratio (float): Ratio A/A_col.
+        gamma (float): Coefficient adiabatique du gaz.
+        subsonic (bool): True pour la solution subsonique (convergent), False pour supersonique (divergent).
     
     Returns:
-        float: Le nombre de Mach local.
+        float: Nombre de Mach local.
     """
     def eq(M):
         if M <= 0: return 1e6 # Évite les erreurs mathématiques
+        # Équation de Saint-Venant pour les écoulements compressibles
         return (1/M)*((2/(gamma+1))*(1+(gamma-1)/2*M**2))**((gamma+1)/(2*(gamma-1))) - area_ratio
     
     guess = 0.1 if subsonic else 2.5
@@ -117,79 +111,75 @@ def get_mach(area_ratio, gamma, subsonic=True):
 
 def bartz_hg(D_t, P_cc, c_star, At_A, T_cc, T_w, gamma, M, mu_g, cp_g, Pr_g):
     """
-    Calcule le coefficient de convection gaz (h_g) via la corrélation de Bartz.
-    Cette corrélation semi-empirique est standard pour estimer les flux thermiques dans les fusées.
+    Calcule le coefficient de convection gaz (hg) via la corrélation de Bartz simplifiée.
+    Cette corrélation est standard pour les moteurs-fusées à ergols liquides.
     """
-    # Facteur de correction sigma pour les effets de couche limite compressible
+    # Facteur de correction sigma (prend en compte la température de paroi)
     sigma = ((0.5 * T_w/T_cc * (1 + (gamma-1)/2 * M**2) + 0.5)**(-0.68) * (1 + (gamma-1)/2 * M**2)**(-0.12))
-    
-    # Formule de Bartz simplifiée
+    # Formule de Bartz
     hg = (0.026 / (D_t**0.2)) * (mu_g**0.2 * cp_g / Pr_g**0.6) * (P_cc/c_star)**0.8 * (At_A)**0.9 * sigma
     return hg
 
 def run_simulation_logic():
     """
-    Orchestre la simulation complète :
-    1. Initialisation géométrique.
-    2. Calcul de l'équilibre chimique (Cantera).
-    3. Boucle itérative spatiale (Contre-courant).
-    4. Résolution du bilan thermique à chaque pas.
+    Fonction principale exécutant la boucle de simulation quasi-1D.
+    Couple l'aérodynamique, la combustion (Cantera), les fluides réels (CoolProp) et le transfert thermique.
     """
     
-    # --- A. PRÉPARATION GÉOMÉTRIQUE ---
+    # --- A. Initialisation Géométrique ---
     x_coords, r_coords = generate_geometry()
-    dr_dx = np.gradient(r_coords, x_coords) # Pente locale pour l'angle du flux
-    A = np.pi * r_coords**2
-    idx_t = np.argmin(A) # Index du col (throat)
+    dr_dx = np.gradient(r_coords, x_coords) # Pente de la paroi
+    A = np.pi * r_coords**2                 # Aires de section
+    idx_t = np.argmin(A)                    # Index du col (throat)
     A_t, D_t = A[idx_t], 2*r_coords[idx_t]
 
-    # --- B. THERMODYNAMIQUE (COMBUSTION) ---
+    # --- B. Calcul Thermodynamique du Gaz (Cantera) ---
     try:
-        # Initialisation de Cantera pour un mélange H2/O2
+        # Utilisation du mécanisme GRI-3.0 pour simuler la combustion H2/O2
         gas = ct.Solution('gri30.yaml')
         gas.TPX = 300, P_cc, {'H2': 1, 'O2': 0.5} 
-        gas.equilibrate('HP') # Combustion à Enthalpie et Pression constantes
+        gas.equilibrate('HP') # Équilibre à Enthalpie et Pression constantes
         
-        # Extraction des propriétés du gaz brûlé
+        # Récupération des propriétés du mélange brûlé
         T_cc, gamma = gas.T, gas.cp/gas.cv
         mu_g, cp_g, Pr_g = gas.viscosity, gas.cp, 0.7
         R_spec = ct.gas_constant / gas.mean_molecular_weight
         c_star = P_cc * A_t * np.sqrt(gamma) # Vitesse caractéristique
     except Exception as e:
-        st.error(f"Erreur d'initialisation Cantera (vérifiez gri30.yaml) : {e}")
+        st.error(f"Erreur Cantera (vérifiez la présence de gri30.yaml) : {e}")
         return None
 
-    # --- C. INITIALISATION DES VECTEURS DE RÉSULTATS ---
+    # --- C. Préparation des Tableaux de Résultats ---
     N_pts = len(x_coords)
     res = {
         'x': x_coords, 'r': r_coords, 'dr_dx': dr_dx, 'idx_t': idx_t,
         'Vel': np.zeros(N_pts), 'Mach': np.zeros(N_pts),
         'P_gas': np.zeros(N_pts), 'P_cool': np.zeros(N_pts),
         'T_gas': np.zeros(N_pts),
-        'T_wh': np.zeros(N_pts), # Température paroi côté chaud (hot)
-        'T_wc': np.zeros(N_pts), # Température paroi côté froid (cold)
+        'T_wh': np.zeros(N_pts), 'T_wc': np.zeros(N_pts),
         'T_cool': np.zeros(N_pts)
     }
 
-    # --- D. BOUCLE DE RÉSOLUTION (CONTRE-COURANT) ---
-    # On parcourt la tuyère de la SORTIE vers l'ENTRÉE (index inversé)
-    # car le liquide de refroidissement remonte la tuyère.
+    # --- D. Boucle de Résolution Spatiale (Contre-Courant) ---
+    # Le liquide entre par la sortie de la tuyère (nozzle exit) et remonte vers la chambre.
+    # On itère donc de la fin (i=N_pts) vers le début (i=0).
+    
     curr_Tc = T_coolant_in
     curr_Pc = P_coolant_in
     
-    # Facteur géométrique lié à l'hélicoïde (le chemin est plus long que la tuyère)
+    # Prise en compte de la géométrie hélicoïdale des canaux
     angle_rad = np.radians(channel_angle)
-    angle_factor = 1.0 / np.cos(angle_rad)
+    angle_factor = 1.0 / np.cos(angle_rad) # Augmentation de la longueur effective
 
     progress_bar = st.progress(0)
 
     for i in range(N_pts-1, -1, -1):
-        # 1. Aérodynamique Gaz (Isentropique 1D)
-        is_sub = (i < idx_t) # Subsonique avant le col
+        # 1. Aérodynamique Gaz (Isentropique)
+        is_sub = (i < idx_t) # Subsonique avant le col, Supersonique après
         M = get_mach(A[i]/A_t, gamma, subsonic=is_sub)
         res['Mach'][i] = M
         
-        # Température et Pression statiques (locales)
+        # 2. Propriétés Statiques du Gaz
         T_st = T_cc / (1 + (gamma-1)/2 * M**2)
         P_st = P_cc / (1 + (gamma-1)/2 * M**2)**(gamma/(gamma-1))
         res['P_gas'][i] = P_st
@@ -198,77 +188,77 @@ def run_simulation_logic():
         T_aw = T_st * (1 + 0.9 * (gamma-1)/2 * M**2)
         res['Vel'][i] = M * np.sqrt(gamma * R_spec * T_st)
 
-        # 2. Propriétés du Liquide (CoolProp - Fluide Réel)
+        # 3. Propriétés du Liquide de Refroidissement (CoolProp)
+        # Gestion des fluides réels (ex: Hydrogène supercritique)
         try:
-            # Appel à CoolProp pour densité, viscosité, Cp, conductivité
             rho = PropsSI('D','P',curr_Pc,'T',curr_Tc,'Hydrogen')
             mu  = PropsSI('V','P',curr_Pc,'T',curr_Tc,'Hydrogen')
             cp  = PropsSI('C','P',curr_Pc,'T',curr_Tc,'Hydrogen')
             k_l = PropsSI('L','P',curr_Pc,'T',curr_Tc,'Hydrogen')
         except:
-            # Valeurs de repli (fallback) en cas d'erreur CoolProp
+            # Valeurs par défaut en cas de défaillance CoolProp (ex: hors bornes)
             rho, mu, cp, k_l = 70, 1e-5, 14000, 0.1
 
-        # 3. Coefficients d'échange thermique
+        # 4. Coefficients d'Échange Thermique
         W, H = channel_width, channel_height
         Dh = 4*W*H / (2*(W+H)) # Diamètre hydraulique
         
-        # Nombre de Reynolds et Nusselt (Dittus-Boelter)
+        # Côté Liquide : Corrélation Dittus-Boelter ou similaire
         Re = (mdot_coolant/(N_channels*W*H)) * Dh / mu
         h_c = 0.023 * (k_l/Dh) * Re**0.8 * (cp*mu/k_l)**0.4
         
         # Efficacité des ailettes (Fin Efficiency)
-        # La chaleur doit voyager le long des "murs" des canaux
+        # La paroi entre les canaux agit comme une ailette
         t_fin = (2*np.pi*r_coords[i] - N_channels*W) / N_channels
         if t_fin < 1e-5: t_fin = 1e-5
         m_fin = np.sqrt(2 * h_c / (k_material * t_fin))
         eta_f = np.tanh(m_fin * H) / (m_fin * H)
-        h_c_eff = h_c * (W + 2 * H * eta_f) / (W + t_fin) # Coefficient effectif corrigé
+        h_c_eff = h_c * (W + 2 * H * eta_f) / (W + t_fin) # Coefficient effectif augmenté
         
-        # Coefficient Gaz (Bartz)
+        # Côté Gaz : Corrélation de Bartz
         h_g = bartz_hg(D_t, P_cc, c_star, A_t/A[i], T_cc, 800, gamma, M, mu_g, cp_g, Pr_g)
         
-        # 4. Bilan Thermique (Réseau de résistances)
-        # R_tot = R_conv_gaz + R_cond_paroi + R_conv_liq
+        # 5. Bilan Thermique (Analogie Électrique)
+        # R_tot = R_conv_gaz + R_cond_paroi + R_conv_liquide
         R_tot = (1/h_g) + (wall_thickness/k_material) + (1/(h_c_eff * angle_factor))
         q = (T_aw - curr_Tc) / R_tot # Flux thermique (W/m2)
         
         # Calcul des températures intermédiaires
         res['T_gas'][i] = T_aw
-        res['T_wh'][i]  = T_aw - q/h_g                  # T° Paroi côté chaud
-        res['T_wc'][i]  = res['T_wh'][i] - q*(wall_thickness/k_material) # T° Paroi côté froid
+        res['T_wh'][i]  = T_aw - q/h_g                  # T° Paroi côté gaz
+        res['T_wc'][i]  = res['T_wh'][i] - q*(wall_thickness/k_material) # T° Paroi côté liquide
         res['T_cool'][i]= curr_Tc
         res['P_cool'][i]= curr_Pc
         
-        # 5. Mise à jour de l'état du fluide pour le pas suivant (précédent en x)
+        # 6. Intégration pour le pas suivant (dx)
         dx = abs(x_coords[i] - x_coords[i-1]) if i > 0 else 0.001
-        dx_eff = dx * angle_factor # Longueur réelle parcourue dans l'hélice
+        dx_eff = dx * angle_factor
         
-        # Échauffement du fluide (Conservation de l'énergie)
+        # Mise à jour enthalpique du liquide (Échauffement)
         curr_Tc += q * (2*np.pi*r_coords[i]*dx) / (mdot_coolant * cp)
         
-        # Perte de charge (Darcy-Weisbach approximé)
+        # Mise à jour hydraulique (Perte de charge)
+        # Approximation Darcy-Weisbach
         v_liq = mdot_coolant / (rho * N_channels * W * H)
         dP = 0.02 * (dx_eff/Dh) * (rho * v_liq**2)/2 
         curr_Pc += dP # La pression augmente car on remonte le courant
         
-        # Mise à jour UI
         if i % 30 == 0:
             progress_bar.progress((N_pts - i) / N_pts)
             
     progress_bar.progress(1.0)
     return res
 
-# ==============================================================================
-# 3. INTERFACE UTILISATEUR & GRAPHIQUES
-# ==============================================================================
+# =============================================================================
+# 4. VISUALISATION ET DASHBOARD
+# =============================================================================
 
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 Simulation", "📊 Résultats", "📘 Méthodologie", "📥 Rapport Complet"])
 
 if 'sim_data' not in st.session_state:
     st.session_state['sim_data'] = None
 
-# --- ONGLET 1 : Lancement & Visualisation Rapide ---
+# --- ONGLET 1 : Lancement et Graphiques Principaux ---
 with tab1:
     st.write("### Contrôle de la Simulation")
     
@@ -278,25 +268,26 @@ with tab1:
         launch_btn = st.button("▶️ LANCER LA SIMULATION", use_container_width=True, type="primary")
 
     if launch_btn:
-        with st.spinner("Calculs thermodynamiques en cours (Équilibre + Transferts)..."):
+        with st.spinner("Calculs thermodynamiques en cours..."):
             st.session_state['sim_data'] = run_simulation_logic()
     
     if st.session_state['sim_data']:
         data = st.session_state['sim_data']
         x_c, r_c, vel = data['x'], data['r'], data['Vel']
-        st.success("Simulation terminée avec succès !")
+        st.success("Simulation terminée !")
         
-        # --- GRAPHIQUE 1 : CHAMP DE VITESSE (2D) ---
+        # ---------------------------------------------------------------------
+        # GRAPHIQUE 1 : CHAMP DE VITESSE (Approximation 2D)
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.subheader("1. Champ de Vitesse Mach (2D)")
-        st.caption("Visualisation du développement de l'écoulement supersonique dans le divergent.")
-
+        
         fig1, ax1 = plt.subplots(figsize=(10, 5))
         Y_MAX = max(r_c) * 1.4
         y_vals = np.linspace(-Y_MAX, Y_MAX, 120)
         X_grid, Y_grid = np.meshgrid(x_c, y_vals)
         
-        # Interpolation et masquage pour effet visuel "Tuyère"
+        # Création du masque pour ne dessiner que dans la tuyère
         Vel_Mag_2D = np.zeros_like(X_grid)
         Mask_2D = np.ones_like(X_grid, dtype=bool)
 
@@ -312,11 +303,12 @@ with tab1:
         Mask_2D[mask_valid] = False
         Vel_Mag_Ma = np.ma.masked_where(Mask_2D, Vel_Mag_2D)
         
+        # Rendu visuel
         cmap = plt.get_cmap('turbo')
         mesh = ax1.pcolormesh(X_grid, Y_grid, Vel_Mag_Ma, cmap=cmap, shading='auto')
         plt.colorbar(mesh, ax=ax1, label="Vitesse (m/s)")
         
-        # Ajout des vecteurs de flux (Quivers)
+        # Ajout des vecteurs vitesse (Quiver) pour visualiser l'écoulement
         idx_sections = np.linspace(15, len(x_c)-15, 10, dtype=int)
         for idx in idx_sections:
             xi, ri = x_c[idx], r_c[idx]
@@ -336,11 +328,12 @@ with tab1:
         ax1.set_ylabel("Rayon (m)")
         st.pyplot(fig1)
 
-        # --- GRAPHIQUE 2 : PROFILS THERMIQUES ---
+        # ---------------------------------------------------------------------
+        # GRAPHIQUE 2 : PROFILS THERMIQUES INTERFACIAUX
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.subheader("2. Profils Thermiques aux Interfaces")
-        st.caption("Coupes transversales de la température à travers les couches limites (Gaz -> Mur -> Liquide).")
-
+        
         fig2, ax2 = plt.subplots(figsize=(10, 6))
         indices = [20, data['idx_t'], len(x_c)-20] # Entrée, Col, Sortie
         labels = ["Entrée", "Col", "Sortie"]
@@ -348,15 +341,14 @@ with tab1:
         
         for k, idx in enumerate(indices):
             Ti, Twh, Twc, Tliq = data['T_gas'][idx], data['T_wh'][idx], data['T_wc'][idx], data['T_cool'][idx]
-            # Création de profils fictifs pour la visualisation des couches limites
+            # Interpolation visuelle pour représenter les couches limites
             x_g, y_g = np.linspace(-0.5, 0, 15), Twh + (Ti - Twh)*(1 - np.exp(np.linspace(-0.5, 0, 15)/0.1))
-            x_w, y_w = np.linspace(0, 1, 10), np.linspace(Twh, Twc, 10) # Conduction linéaire
+            x_w, y_w = np.linspace(0, 1, 10), np.linspace(Twh, Twc, 10)
             x_l, y_l = np.linspace(1, 1.5, 15), Tliq + (Twc - Tliq)*np.exp(-(np.linspace(1, 1.5, 15)-1)/0.1)
             
             full_x, full_y = np.concatenate([x_g, x_w, x_l]), np.concatenate([y_g, y_w, y_l])
             ax2.plot(full_x, full_y, color=colors[k], linewidth=2, label=labels[k])
             
-            # Étiquettes de température
             bbox = dict(boxstyle="round,pad=0.3", fc="white", ec=colors[k], alpha=0.8)
             ax2.text(0, Twh + (60 if k==1 else -60), f"{int(Twh)} K", fontsize=9, color=colors[k], fontweight='bold', ha='right', bbox=bbox)
             ax2.text(1, Twc, f"{int(Twc)} K", fontsize=9, color=colors[k], fontweight='bold', ha='left', bbox=bbox)
@@ -368,18 +360,20 @@ with tab1:
         ax2.grid(True, linestyle=':', alpha=0.5)
         st.pyplot(fig2)
 
-        # --- GRAPHIQUE 3 : VUE GLOBALE MULTI-AXES ---
+        # ---------------------------------------------------------------------
+        # GRAPHIQUE 3 : VUE GLOBALE MULTI-AXES
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.subheader("3. Vue d'Ensemble : Températures et Mach")
         
         fig3, host = plt.subplots(figsize=(12, 6))
-        fig3.subplots_adjust(right=0.75) # Espace réservé pour les axes multiples
+        fig3.subplots_adjust(right=0.75) # Marge pour les axes multiples
 
         par1 = host.twinx()
         par2 = host.twinx()
         par3 = host.twinx()
 
-        # Décalage des axes supplémentaires vers la droite
+        # Positionnement des axes décalés
         par2.spines["right"].set_position(("axes", 1.08))
         make_patch_spines_invisible(par2)
         par2.spines["right"].set_visible(True)
@@ -388,7 +382,7 @@ with tab1:
         make_patch_spines_invisible(par3)
         par3.spines["right"].set_visible(True)
 
-        # Tracés courbes
+        # Tracés des courbes
         p_geo, = host.plot(x_c, r_c*100, "k-", linewidth=3, alpha=0.4, label="Géométrie")
         host.plot(x_c, -r_c*100, "k-", linewidth=3, alpha=0.4)
         host.fill_between(x_c, r_c*100, -r_c*100, color='gray', alpha=0.1)
@@ -398,7 +392,7 @@ with tab1:
         p_cool, = par2.plot(x_c, data['T_cool'], "b-", linewidth=2, label="T° Liquide")
         p_mach, = par3.plot(x_c, data['Mach'], "g-.", label="Mach")
 
-        # Mise en forme des axes
+        # Configuration des labels et couleurs
         host.set_xlabel("Position (m)")
         host.set_ylabel("Rayon (cm)")
         
@@ -417,21 +411,21 @@ with tab1:
         
         st.pyplot(fig3)
 
-        # --- GRAPHIQUE 4 : PRESSIONS ---
+        # ---------------------------------------------------------------------
+        # GRAPHIQUE 4 : PERTES DE CHARGE ET PRESSIONS
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.subheader("4. Évolution des Pressions")
-        st.caption("Comparaison de la détente des gaz (Pression motrice) et de la perte de charge du liquide.")
         
         fig4, ax_main = plt.subplots(figsize=(10, 5))
-        ax_pg = ax_main.twinx() # Axe Pression Gaz
-        ax_pc = ax_main.twinx() # Axe Pression Coolant
+        ax_pg = ax_main.twinx()
+        ax_pc = ax_main.twinx()
         
-        # Décalage
+        # Décalage axe
         ax_pc.spines["right"].set_position(("axes", 1.12))
         make_patch_spines_invisible(ax_pc)
         ax_pc.spines["right"].set_visible(True)
 
-        # Géométrie en fond pour contexte
         ax_main.fill_between(x_c, r_c*100, (r_c+0.005)*100, color='gray', alpha=0.3, label="Paroi")
         ax_main.fill_between(x_c, -r_c*100, -(r_c+0.005)*100, color='gray', alpha=0.3)
         
@@ -453,18 +447,20 @@ with tab1:
         
         st.pyplot(fig4)
 
-        # --- GRAPHIQUE 5 : ZOOM RADIAL ---
+        # ---------------------------------------------------------------------
+        # GRAPHIQUE 5 : ZOOM SUR LA COUCHE LIMITE (Divergent)
+        # ---------------------------------------------------------------------
         st.markdown("---")
         st.subheader("5. Zoom : Coupe Radiale dans le Divergent")
         
-        # Sélection d'une section spécifique dans le divergent (x = 2 * diamètre col)
+        # Sélection d'une section spécifique (x = 2 * diamètre col)
         D_t = 2 * min(r_c)
         target_x = 2 * D_t
         idx_target = (np.abs(x_c - target_x)).argmin()
         
         vals = {k: data[k][idx_target] for k in ['T_gas', 'T_wh', 'T_wc', 'T_cool']}
         
-        # Génération profils micro pour le zoom
+        # Génération des profils de température pour le zoom
         dist_g = np.linspace(-0.5e-3, 0, 20) 
         prof_g = vals['T_wh'] + (vals['T_gas'] - vals['T_wh']) * (1 - np.exp((dist_g)/0.0001))
         
@@ -483,11 +479,155 @@ with tab1:
         ax5.plot(wall_thickness*1000, vals['T_wc'], 'bo')
         ax5.axvspan(0, wall_thickness*1000, color='orange', alpha=0.2)
         
-        # Annotations textuelles
         ax5.text(-0.4, vals['T_gas']-200, "GAZ", color='red', fontweight='bold')
         ax5.text(wall_thickness*1000/2, (vals['T_wh']+vals['T_wc'])/2, "PAROI", ha='center', fontweight='bold', rotation=90)
         ax5.text(wall_thickness*1000 + 0.1, vals['T_cool']+20, "H2 LIQUIDE", color='blue', fontweight='bold')
 
         ax5.set_xlabel("Distance (mm) - 0 = Interface Paroi/Gaz")
         ax5.set_ylabel("Température (K)")
-        ax5.set_title
+        ax5.set_title(f"Profil Radial à x={x_c[idx_target]:.3f} m")
+        ax5.grid(True, linestyle=':')
+        ax5.legend()
+        
+        st.pyplot(fig5)
+
+# --- ONGLET 2 : EXPORTATION DES DONNÉES ---
+with tab2:
+    st.header("📋 Tableau de Données Brutes")
+    
+    if st.session_state['sim_data']:
+        data = st.session_state['sim_data']
+        
+        df_results = pd.DataFrame({
+            "Position X (m)": data['x'],
+            "Rayon (m)": data['r'],
+            "Mach": data['Mach'],
+            "Vitesse Gaz (m/s)": data['Vel'],
+            "Temp. Gaz (K)": data['T_gas'],
+            "Temp. Paroi Chaude (K)": data['T_wh'],
+            "Temp. Paroi Froide (K)": data['T_wc'],
+            "Temp. Liquide (K)": data['T_cool']
+        })
+        
+        st.dataframe(df_results, use_container_width=True)
+        
+        csv = df_results.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Télécharger les données en CSV",
+            data=csv,
+            file_name='resultats_simulation_tuyere.csv',
+            mime='text/csv',
+        )
+    else:
+        st.warning("⚠️ Veuillez lancer la simulation dans le premier onglet pour afficher les données.")
+
+# --- ONGLET 3 : DOCUMENTATION ET SCHÉMAS LOGIQUES ---
+with tab3:
+    st.markdown("## 📘 Architecture & Méthodologie du Code")
+    st.info("""
+    **Résumé du Fonctionnement :** Ce simulateur repose sur une approche **Quasi-1D Stationnaire**.  
+    La tuyère est découpée en tranches (discrétisation spatiale). Pour chaque tranche, le code résout les équations de conservation (Masse, Énergie, qdm) pour déterminer l'équilibre thermique.
+    """)
+    st.markdown("---")
+    
+    # Présentation des librairies scientifiques utilisées
+    st.header("1. Le Moteur de Calcul")
+    col_lib1, col_lib2, col_lib3 = st.columns([1, 1, 1])
+
+    with col_lib1:
+        st.error("**🧪 Cantera**")
+        st.caption("Chimie & Combustion")
+        st.markdown("* Équilibre chimique complexe\n* Calcul du Cp, gamma et T_flamme")
+
+    with col_lib2:
+        st.info("**❄️ CoolProp**")
+        st.caption("Fluides Réels")
+        st.markdown("* Propriétés de l'H2 supercritique/liquide\n* Gestion des variations brutales de Cp")
+    
+    with col_lib3:
+        st.warning("**🐍 SciPy & NumPy**")
+        st.caption("Mathématiques")
+        st.markdown("* Résolution Newton-Raphson (Mach)\n* Calcul vectoriel")
+
+    st.markdown("---")
+    
+    # Diagramme de flux (Graphviz)
+    st.header("2. Logique de Résolution")
+    st.graphviz_chart('''
+    digraph {
+        rankdir=LR;
+        node [fontname="Helvetica", fontsize=10, style="filled,rounded", shape=box];
+        edge [color="#666666", arrowsize=0.8];
+        
+        subgraph cluster_main {
+            label = "BOUCLE DE CALCUL (Par tranche dx)";
+            style=filled; bgcolor="#f9fbe7"; color="#c5e1a5";
+            
+            subgraph cluster_gas {
+                label = "Côté Gaz";
+                style=filled; bgcolor="#ffab91";
+                Mach [label="1. Aérodynamique\nMach = f(Area)"];
+                Bartz [label="2. Convection Gaz\n(Bartz)"];
+            }
+
+            Wall [label="3. Conduction Paroi", shape=rect, fillcolor="#8d6e63", fontcolor="white"];
+
+            subgraph cluster_liq {
+                label = "Côté Liquide";
+                style=filled; bgcolor="#81d4fa";
+                Prop [label="4. CoolProp @ P, T"];
+                Dittus [label="5. Convection Liq."];
+            }
+
+            Balance [label="⚖️ BILAN FLUX", shape=diamond, fillcolor="#fff176"];
+        }
+        
+        Mach -> Bartz -> Wall;
+        Prop -> Dittus -> Wall;
+        Wall -> Balance;
+        Balance -> Prop [label="Mise à jour T_liq", style=dashed, dir=back];
+    }
+    ''')
+
+    # Explications Physiques
+    st.header("3. Modèles Physiques Utilisés")
+    st.subheader("A. L'Équation Maîtresse du Flux")
+    st.latex(r"Q_{flux} = \frac{T_{gaz}^{adiabatique} - T_{liquide}}{ R_{convection\_gaz} + R_{conduction\_paroi} + R_{convection\_liquide} }")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.expander("🔥 Côté Gaz : Bartz"):
+            st.latex(r"h_g = \frac{0.026}{D^{0.2}} \left( \frac{\mu^{0.2} C_p}{Pr^{0.6}} \right) \left( \frac{P_c}{c^*} \right)^{0.8} \sigma")
+    with c2:
+        with st.expander("❄️ Côté Liquide : Dittus-Boelter"):
+            st.latex(r"Nu = 0.023 Re^{0.8} Pr^{0.4}")
+
+# --- ONGLET 4 : GESTION DES RAPPORTS PDF ---
+with tab4:
+    st.header("📄 Rapport Technique")
+    nom_du_fichier = "Rapport_TT.pdf"
+    
+    import base64
+    def show_pdf(file_path):
+        with open(file_path, "rb") as f:
+            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
+        st.markdown(pdf_display, unsafe_allow_html=True)
+
+    try:
+        with open(nom_du_fichier, "rb") as f:
+            pdf_data = f.read()
+        
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            st.download_button(
+                label="📥 Télécharger le Rapport (PDF)",
+                data=pdf_data,
+                file_name="Rapport_Tuyere_Rocket.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        with col2:
+            show_pdf(nom_du_fichier)
+    except FileNotFoundError:
+        st.error(f"⚠️ Erreur : Le fichier '{nom_du_fichier}' est introuvable.")
