@@ -521,87 +521,182 @@ with tab2:
     else:
         st.warning("⚠️ Veuillez lancer la simulation dans le premier onglet pour afficher les données.")
 
-# --- ONGLET 3 : DOCUMENTATION ET SCHÉMAS LOGIQUES ---
+# --- ONGLET 3 : MÉTHODOLOGIE & EXPLICATIONS ---
 with tab3:
     st.markdown("## 📘 Architecture & Méthodologie du Code")
+    
     st.info("""
     **Résumé du Fonctionnement :** Ce simulateur repose sur une approche **Quasi-1D Stationnaire**.  
-    La tuyère est découpée en tranches (discrétisation spatiale). Pour chaque tranche, le code résout les équations de conservation (Masse, Énergie, qdm) pour déterminer l'équilibre thermique.
+    La tuyère est découpée en une centaine de "tranches" (discrétisation spatiale). Pour chaque tranche, le code résout les équations de conservation de la masse, de l'énergie et de la quantité de mouvement pour déterminer l'équilibre thermique entre le gaz brûlant et le liquide de refroidissement.
     """)
+
     st.markdown("---")
-    
-    # Présentation des librairies scientifiques utilisées
+
+    # -------------------------------------------------------------------------
+    # 1. ARCHITECTURE LOGICIELLE (Amélioré)
+    # -------------------------------------------------------------------------
     st.header("1. Le Moteur de Calcul")
+    st.write("La précision du modèle repose sur l'utilisation de bibliothèques thermodynamiques de référence, évitant les approximations constantes.")
+
     col_lib1, col_lib2, col_lib3 = st.columns([1, 1, 1])
 
     with col_lib1:
         st.error("**🧪 Cantera**")
         st.caption("Chimie & Combustion")
-        st.markdown("* Équilibre chimique complexe\n* Calcul du Cp, gamma et T_flamme")
+        st.markdown("""
+        *Gère le côté "Feu"*
+        * Calcule l'équilibre chimique complexe (dissociation).
+        * Fournit le $C_p$, $\gamma$ et la T° de flamme exacts.
+        """)
 
     with col_lib2:
         st.info("**❄️ CoolProp**")
         st.caption("Fluides Réels")
-        st.markdown("* Propriétés de l'H2 supercritique/liquide\n* Gestion des variations brutales de Cp")
+        st.markdown("""
+        *Gère le côté "Glace"*
+        * Indispensable pour l'Hydrogène supercritique/liquide.
+        * Calcule les pics de chaleur spécifique ($C_p$) près du point critique.
+        """)
     
     with col_lib3:
         st.warning("**🐍 SciPy & NumPy**")
         st.caption("Mathématiques")
-        st.markdown("* Résolution Newton-Raphson (Mach)\n* Calcul vectoriel")
+        st.markdown("""
+        *Le Cerveau*
+        * Résolution des équations non-linéaires (Newton-Raphson) pour trouver le Mach.
+        * Gestion vectorielle des données.
+        """)
 
     st.markdown("---")
-    
-    # Diagramme de flux (Graphviz)
+
+    # -------------------------------------------------------------------------
+    # 2. ALGORITHME VISUEL (Graphviz Avancé)
+    # -------------------------------------------------------------------------
     st.header("2. Logique de Résolution")
+    st.write("Le système est un **échangeur de chaleur à contre-courant**. Le gaz va de gauche à droite, le liquide de droite à gauche.")
+
+    # Diagramme Graphviz amélioré avec clusters et flow visuel
     st.graphviz_chart('''
     digraph {
         rankdir=LR;
+        compound=true;
         node [fontname="Helvetica", fontsize=10, style="filled,rounded", shape=box];
         edge [color="#666666", arrowsize=0.8];
-        
+
+        # Entrées
+        subgraph cluster_input {
+            label = "INITIALISATION";
+            style=dashed; color="#bdbdbd"; fontcolor="#bdbdbd";
+            Geom [label="📐 Géométrie\n(Profil .csv)", fillcolor="#e0e0e0"];
+            Comb [label="🔥 Combustion\n(P_chambre, Ratio O/F)", fillcolor="#ffccbc"];
+        }
+
+        # Cœur du calcul
         subgraph cluster_main {
             label = "BOUCLE DE CALCUL (Par tranche dx)";
-            style=filled; bgcolor="#f9fbe7"; color="#c5e1a5";
+            style=filled; bgcolor="#f9fbe7"; color="#c5e1a5"; fontcolor="#558b2f";
             
+            # Côté Gaz
             subgraph cluster_gas {
-                label = "Côté Gaz";
-                style=filled; bgcolor="#ffab91";
-                Mach [label="1. Aérodynamique\nMach = f(Area)"];
-                Bartz [label="2. Convection Gaz\n(Bartz)"];
+                label = "Côté Gaz (Chaud)";
+                style=filled; bgcolor="#ffab91"; color="#ff7043"; fontcolor="white";
+                Mach [label="1. Aérodynamique\nMach = f(Area)", fillcolor="#ffccbc"];
+                Bartz [label="2. Convection Gaz\nCorrélation de Bartz\n(Calcul h_g)", fillcolor="#ffab91"];
             }
 
-            Wall [label="3. Conduction Paroi", shape=rect, fillcolor="#8d6e63", fontcolor="white"];
+            # Mur
+            Wall [label="3. Conduction Paroi\n(Cuivre / Inconel)", shape=rect, fillcolor="#8d6e63", fontcolor="white", width=2];
 
+            # Côté Liquide
             subgraph cluster_liq {
-                label = "Côté Liquide";
-                style=filled; bgcolor="#81d4fa";
-                Prop [label="4. CoolProp @ P, T"];
-                Dittus [label="5. Convection Liq."];
+                label = "Côté Liquide (Froid)";
+                style=filled; bgcolor="#81d4fa"; color="#0288d1"; fontcolor="white";
+                Prop [label="4. Propriétés Fluide\n(CoolProp @ P, T)", fillcolor="#b3e5fc"];
+                Dittus [label="5. Convection Liq.\nCorrélation Dittus-Boelter\n(Calcul h_l)", fillcolor="#81d4fa"];
             }
 
-            Balance [label="⚖️ BILAN FLUX", shape=diamond, fillcolor="#fff176"];
+            Balance [label="⚖️ BILAN FLUX\nConvergence T_paroi", shape=diamond, fillcolor="#fff176", style="filled,dashed"];
         }
+
+        # Sortie
+        Output [label="📊 VISUALISATION\nGraphiques & KPIs", shape=folder, fillcolor="#a5d6a7"];
+
+        # Liaisons
+        Geom -> Mach;
+        Comb -> Mach;
         
-        Mach -> Bartz -> Wall;
-        Prop -> Dittus -> Wall;
+        Mach -> Bartz;
+        Bartz -> Wall [label="Flux entrant"];
+        
+        Prop -> Dittus;
+        Dittus -> Wall [label="Flux sortant"];
+        
         Wall -> Balance;
-        Balance -> Prop [label="Mise à jour T_liq", style=dashed, dir=back];
+        Balance -> Prop [label="Mise à jour T_liq\n(Pas suivant)", style=dashed, dir=back];
+        
+        Balance -> Output [label="Fin de boucle"];
     }
     ''')
-
-    # Explications Physiques
-    st.header("3. Modèles Physiques Utilisés")
-    st.subheader("A. L'Équation Maîtresse du Flux")
-    st.latex(r"Q_{flux} = \frac{T_{gaz}^{adiabatique} - T_{liquide}}{ R_{convection\_gaz} + R_{conduction\_paroi} + R_{convection\_liquide} }")
     
+    st.caption("Note : Le calcul du fluide de refroidissement s'effectue souvent à rebours (de la sortie vers l'injecteur) pour correspondre à la physique du contre-courant.")
+
+    st.markdown("---") 
+
+    # -------------------------------------------------------------------------
+    # 3. PHYSIQUE DÉTAILLÉE
+    # -------------------------------------------------------------------------
+    st.header("3. Modèles Physiques Utilisés")
+
+    st.markdown("""
+    Pour estimer les températures, nous modélisons le transfert de chaleur comme un **réseau de résistances électriques**. La chaleur ("le courant") doit traverser trois obstacles successifs.
+    """)
+
+    
+
+    # --- A. Le Circuit Thermique ---
+    st.subheader("A. L'Équation Maîtresse du Flux")
+    st.latex(r"""
+    Q_{flux} = \frac{T_{gaz}^{adiabatique} - T_{liquide}}{ R_{convection\_gaz} + R_{conduction\_paroi} + R_{convection\_liquide} }
+    """)
+    
+    # --- B. Détail des Corrélations (Expanders pour ne pas surcharger) ---
     c1, c2 = st.columns(2)
+    
     with c1:
         with st.expander("🔥 Côté Gaz : Bartz"):
-            st.latex(r"h_g = \frac{0.026}{D^{0.2}} \left( \frac{\mu^{0.2} C_p}{Pr^{0.6}} \right) \left( \frac{P_c}{c^*} \right)^{0.8} \sigma")
+            st.write("La convection des gaz à haute vitesse est estimée par la formule de **Bartz** (simplifiée ici) :")
+            st.latex(r"""
+            h_g = \frac{0.026}{D^{0.2}} \left( \frac{\mu^{0.2} C_p}{Pr^{0.6}} \right) \left( \frac{P_c}{c^*} \right)^{0.8} \sigma
+            """)
+            st.write("""
+            **Ce qu'il faut retenir :**
+            * Le transfert est maximal au **Col** (là où le diamètre $D$ est petit).
+            * Il augmente avec la Pression Foyer ($P_c$).
+            """)
+
     with c2:
         with st.expander("❄️ Côté Liquide : Dittus-Boelter"):
-            st.latex(r"Nu = 0.023 Re^{0.8} Pr^{0.4}")
+            st.write("Pour le refroidissement dans les canaux, on utilise des corrélations classiques de Nusselt ($Nu$) type **Dittus-Boelter** ou **Gnielinski** :")
+            st.latex(r"""
+            Nu = 0.023 Re^{0.8} Pr^{0.4}
+            """)
+            st.write("""
+            **Ce qu'il faut retenir :**
+            * La vitesse du fluide ($Re$) est la clé : plus ça circule vite, mieux ça refroidit.
+            * Si le liquide bout, le transfert change radicalement (non géré dans ce modèle simple).
+            """)
 
+    st.markdown("---")
+    
+    # --- C. Géométrie des Canaux ---
+    st.subheader("B. Géométrie des Canaux & Ailettes")
+    st.write("Le code prend en compte l'augmentation de la surface d'échange due aux canaux (effet d'ailette).")
+    
+    
+
+    st.info("""
+    **Efficacité des Ailettes ($\eta$) :** Les parois latérales des canaux ("ribs") aident à évacuer la chaleur. Le code calcule un rendement d'ailette pour ne pas surestimer le refroidissement, car le haut de l'ailette est plus chaud que la base.
+    """)
 # --- ONGLET 4 : GESTION DES RAPPORTS PDF ---
 with tab4:
     st.header("📄 Rapport Technique")
@@ -631,3 +726,4 @@ with tab4:
             show_pdf(nom_du_fichier)
     except FileNotFoundError:
         st.error(f"⚠️ Erreur : Le fichier '{nom_du_fichier}' est introuvable.")
+
